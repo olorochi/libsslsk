@@ -1,7 +1,7 @@
 .{
-    .name = .sslsk,
+    .name = .libsslsk,
     .version = "0.0.1",
-    .minimum_zig_version = "0.15.2",
+    .minimum_zig_version = "0.16.0",
     .paths = .{""},
-    .fingerprint = 0x9e65c2d1251c6172,
+    .fingerprint = 0xe133f836dd6421fd,
 }
