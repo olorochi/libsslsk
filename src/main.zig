@@ -17,6 +17,10 @@ fn static(comptime v: anytype) *@TypeOf(v) {
     return &Static.mem;
 }
 
+fn TagPayload(U: type, tag: meta.Tag(U)) type {
+    return @FieldType(U, @tagName(tag));
+}
+
 // I really wish zig had a @ReturnType builtin.
 fn SelectT(values: anytype, comptime field: []const u8) type {
     return [values.len]@FieldType(meta.Child(@TypeOf(values)), field);
@@ -61,15 +65,15 @@ const messages = struct {
                 ip: u32,
                 // If we can rely on pointers to the read buffer, a slice here
                 // would give total control of memory allocations to the
-                // caller. Not even a memcpy.
+                // caller. It could also be an array, but I haven't implemented
+                // a way to read them.
                 hash: []u8,
                 supporter: Bool
             }
         };
 
-        pub fn init(args: struct { gpa: Allocator, username: []const u8, password: []const u8 }) !Login {
-            const gpa, const username, const password = args;
-            const concat = try std.mem.concat(gpa, u8, &.{username, password});
+        pub fn init(gpa: Allocator, username: []const u8, password: []const u8) !Login {
+            const concat = try std.mem.concat(gpa, u8, &.{ username, password });
             defer gpa.free(concat);
             var login: Login = .{
                 .username = concat[0..username.len],
@@ -86,45 +90,29 @@ const messages = struct {
     };
 };
 
-const Request = blk: {
+/// A tagged union for every implemented soulseek protocol response.
+const Response = blk: {
     const decls = @typeInfo(messages).@"struct".decls;
 
     const attrs: [decls.len]Type.UnionField.Attributes = @splat(.{ .@"align" = null });
-    var names: [decls.len][]const u8 = undefined;
     var types: [decls.len]type = undefined;
     var values: [decls.len]u32 = undefined;
+    var names: [decls.len][]const u8 = undefined;
 
     for (decls, &names, &types, &values) |decl, *name, *T, *value| {
+        const Request = @field(messages, decl.name);
+        T.* = Request.Response;
+        value.* = Request.code;
         name.* = .{ ascii.toLower(decl.name[0]) } ++ decl.name[1..];
-        T.* = @field(messages, decl.name);
-        value.* = T.code;
     }
 
     const Tag = @Enum(u32, .exhaustive, &names, &values);
     break :blk @Union(.@"auto", Tag, &names, &types, &attrs);
 };
 
-const Code = meta.Tag(Request);
+const Code = meta.Tag(Response);
 
-// I don't like this function. Maybe a single factory function should return a
-// tuple. That way, to add a type you would just have to add an array to the
-// iteration instead of iterating again. However, I believe this is the only
-// dynamic type that would have to remain with a procedural api refactor, so
-// maybe it will stay this way.
-const Response = blk: {
-    const req_fields = @typeInfo(Request).@"union".fields;
-    const names = select(req_fields, "name");
-    const attrs: [req_fields.len]Type.UnionField.Attributes = @splat(.{ .@"align" = null });
-
-    var types: [req_fields.len]type = undefined;
-    for (select(req_fields, "type"), &types) |ReqT, *T| {
-        T.* = ReqT.Response;
-    }
-
-    break :blk @Union(.@"auto", Code, &names, &types, &attrs);
-};
-
-fn write(writer: *std.Io.Writer, message: anytype) !void {
+fn write(writer: *Writer, message: anytype) !void {
     const T = @TypeOf(message);
     const fields = @typeInfo(T).@"struct".fields;
 
@@ -194,15 +182,9 @@ fn readT(T: type, gpa: Allocator, reader: *Reader) !T {
 }
 
 fn readUnion(U: type, gpa: Allocator, reader: *Reader, tag: meta.Tag(U)) !U {
-    const fields = @typeInfo(U).@"union".fields;
     switch (tag) {
         inline else => |code| {
-            const name = @tagName(code);
-            const T: type = inline for (fields) |field| {
-                comptime if (std.mem.eql(u8, name, field.name)) break field.type;
-            };
-
-            return @unionInit(U, name, try readT(T, gpa, reader));
+            return @unionInit(U, @tagName(code), try readT(TagPayload(U, code), gpa, reader));
         }
     }
 }
