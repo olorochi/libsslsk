@@ -12,6 +12,9 @@ fn allocate(T: type) T {
     return undefined;
 }
 
+// Maybe this is a bad name? Static memory is more of a mechanism here. The
+// best use of this function is to transform a temporary (const in zig) to a
+// mutable type, at the cost of a dereference in static memory.
 fn static(comptime v: anytype) *@TypeOf(v) {
     const Static = struct { var mem = v; };
     return &Static.mem;
@@ -40,12 +43,37 @@ const Header = extern struct {
     code: u32,
 };
 
+const FatBool = enum(u8) {
+    false = 0,
+    true = 1
+};
+
 const Bool = enum(u8) {
     false = 0,
     true = 1
 };
 
-const messages = struct {
+const Obfuscation = enum(u32) {
+    none = 0,
+    rotated = 1
+};
+
+const Status = enum(u8) {
+    offline = 0,
+    away = 1,
+    online = 2
+};
+
+const UserStats = struct {
+    username: []u8,
+    avgspeed: u32,
+    uploadnum: u32,
+    unknown: u32,
+    files: u32,
+    dirs: u32,
+};
+
+pub const messages = struct {
     pub const Login = struct {
         pub const code = 1;
 
@@ -55,7 +83,7 @@ const messages = struct {
         hash: [Md5.digest_length * 2]u8,
         minor: u32 = 1,
 
-        const Response = union(Bool) {
+        pub const Response = union(Bool) {
             false: struct {
                 reason: []u8,
                 details: ?[]u8
@@ -88,18 +116,255 @@ const messages = struct {
             return login;
         }
     };
+
+    /// Tell the server what port the client is listening on.
+    pub const SetWaitPort = struct {
+        pub const code = 2;
+
+        port: u32,
+        /// This is rarely used. Nicotine+ does not even support it.
+        obfuscation: ?struct {
+            type: Obfuscation,
+            port: u32
+        } = null,
+
+        // TODO: obfuscated init
+    };
+
+    /// Ask for ip and port information about a peer.
+    pub const GetPeerAddress = struct {
+        pub const code = 3;
+
+        username: []const u8,
+
+        pub const Response = struct {
+            username: []u8,
+            ip: u32,
+            port: u32,
+            obfuscation: struct {
+                type: Obfuscation,
+                port: u16 // wtf? u16 ok but why be inconsistent?
+            }
+        };
+    };
+
+    /// Request stats about a user. The soulseek server does not actually send
+    /// notifications for this anymore, but only an initial response. Consider
+    /// GetUserStatus and GetUserStats.
+    pub const WatchUser = struct {
+        pub const code = 5;
+
+        username: []const u8,
+
+        pub const Response = struct {
+            username: []u8,
+            stats: ?struct {
+                status: Status,
+                stats: UserStats,
+                countrycode: ?[]u8
+            }
+        };
+    };
+
+    /// Stop watching user. Deprecated?
+    pub const UnwatchUser = struct {
+        pub const code = 6;
+
+        username: []const u8,
+
+        pub const Response = struct {
+            username: []u8,
+            stats: UserStats,
+        };
+    };
+
+    pub const GetUserStatus = struct {
+        pub const code = 7;
+
+        username: []const u8,
+
+        pub const Response = struct {
+            username: []u8,
+            status: Status,
+            privileged: Bool,
+        };
+    };
+
+    pub const SayChatroom = struct {
+        pub const code = 13;
+
+        room: []const u8,
+        message: []const u8,
+
+        pub const Response = struct {
+            room: []u8,
+            username: []u8,
+            message: []u8,
+        };
+    };
+
+    // TODO:
+    // pub const JoinRoom = struct {
+    //     pub const code = 14;
+
+    //     room: []const u8,
+    //     private: u32,
+
+    //     pub const Response = struct {
+    //         room: []u8,
+    //         users: [][]u8,
+    //         statuses: []Status,
+    //         stats: []UserStats,
+    //         slotsful: []FatBool,
+    //         countries: [][]u8,
+    //         private: ?struct {
+    //             owner: []u8,
+    //             operators: [][]u8
+    //         }
+    //     };
+    // };
+
+    pub const LeaveRoom = struct {
+        pub const code = 15;
+
+        room: []const u8,
+
+        pub const Response = struct {
+            room: []u8,
+        };
+    };
+
+    pub const UserJoinedRoom = struct {
+        pub const code = 16;
+
+        pub const Response = struct {
+            room: []u8,
+            username: []u8,
+            status: Status,
+            stats: UserStats,
+            slotsful: FatBool,
+            countrycode: []u8
+        };
+    };
+
+    pub const UserLeftRoom = struct {
+        pub const code = 17;
+
+        pub const Response = struct {
+            room: []u8,
+            username: []u8,
+        };
+    };
+
+    // TODO: ConnectionType
+    // pub const ConnectToPeer = struct {
+    //     pub const code = 18;
+
+    //     token: u32,
+    //     username: []u8,
+    //     type: []u8,
+
+    //     pub const Response = struct {
+    //         username: []u8,
+    //         type: ConnectionType,
+    //         ip: u32,
+    //         port: u32,
+    //         token: u32,
+    //         privileged: bool,
+    //         obfuscation: Obfuscation
+    //     };
+    // };
+
+    pub const MessageUser = struct {
+        pub const code = 22;
+
+        username: []u8,
+        message: []u8,
+
+        pub const Response = struct {
+            username: []u8,
+        };
+    };
+
+    pub const MessageAcked = struct {
+        pub const code = 23;
+
+        id: u32,
+    };
+
+    pub const FileSearch = struct {
+        pub const code = 26;
+
+        token: u32,
+        query: []u8,
+
+        pub const Response = struct {
+            username: []u8,
+            token: u32,
+            query: []u8,
+        };
+    };
+
+    pub const SetStatus = struct {
+        pub const code = 28;
+
+        status: Status,
+    };
+
+    pub const ServerPing = struct {
+        pub const code = 32;
+    };
+
+    pub const SharedFoldersfiles = struct {
+        pub const code = 35;
+
+        dirs: u32,
+        files: u32
+    };
+
+    /// Request stats about a user.
+    pub const GetUserStats = struct {
+        pub const code = 36;
+
+        username: []const u8,
+
+        pub const Response = struct {
+            username: []u8,
+            stats: UserStats,
+        };
+    };
+
+    pub const Relogged = struct {
+        pub const code = 41;
+        pub const Response = void;
+    };
+
+
+    pub const UserSearch = struct { 
+        pub const code = 42;
+    };
 };
 
 /// A tagged union for every implemented soulseek protocol response.
 const Response = blk: {
     const decls = @typeInfo(messages).@"struct".decls;
+    var filtered: [decls.len]Type.Declaration = undefined;
 
-    const attrs: [decls.len]Type.UnionField.Attributes = @splat(.{ .@"align" = null });
-    var types: [decls.len]type = undefined;
-    var values: [decls.len]u32 = undefined;
-    var names: [decls.len][]const u8 = undefined;
+    var count = 0;
+    for (decls) |decl| {
+        const Request = @field(messages, decl.name);
+        if (@hasDecl(Request, "Response")) {
+            filtered[count] = decl;
+            count += 1;
+        }
+    }
 
-    for (decls, &names, &types, &values) |decl, *name, *T, *value| {
+    const attrs: [count]Type.UnionField.Attributes = @splat(.{ .@"align" = null });
+    var types: [count]type = undefined;
+    var values: [count]u32 = undefined;
+    var names: [count][]const u8 = undefined;
+
+    for (filtered[0..count], &names, &types, &values) |decl, *name, *T, *value| {
         const Request = @field(messages, decl.name);
         T.* = Request.Response;
         value.* = Request.code;
@@ -164,9 +429,9 @@ fn readT(T: type, gpa: Allocator, reader: *Reader) !T {
         },
         .@"pointer" => {
             const size = try reader.takeInt(u32, .little);
-            // This leaks memory. I unfortunately don't think I can remove this
-            // allocation since some responses could be larger than the read
-            // buffer. Regardless, I'm putting off writing a Response
+            // TODO: This leaks memory. I unfortunately don't think I can
+            // remove this allocation since some responses could be larger than
+            // the read buffer. Regardless, I'm putting off writing a Response
             // deallocator for now.
             const slice = try gpa.alloc(u8, size);
             @memcpy(slice, try reader.take(size));
@@ -175,7 +440,7 @@ fn readT(T: type, gpa: Allocator, reader: *Reader) !T {
         .@"enum" => try reader.takeEnum(T, .little),
         // TODO: This requires passing around the header and either summing
         // read bytes or finding out where the zig io interface guarantees
-        // pointer validity.
+        // pointer validity. I should be checking message lenghts anyways.
         .optional => null,
         else => try reader.takeInt(T, .little),
     };
