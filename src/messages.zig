@@ -1,9 +1,11 @@
 const std = @import("std");
-const Allocator = std.mem.Allocator;
+const Allocator = mem.Allocator;
 const ascii = std.ascii;
 const Type = std.builtin.Type;
 const Md5 = std.crypto.hash.Md5;
+const mem = std.mem;
 const meta = std.meta;
+const messages = @This();
 
 const FatBool = enum(u8) {
     false = 0,
@@ -40,7 +42,49 @@ const Recommendation = struct {
     recommendations: i32
 };
 
-pub const server = struct {
+/// Returns the header type associated with request or response union T.
+pub fn Header(T: type) type {
+    const types = .{ client, server, init };
+
+    for (types) |t| {
+        if (T == Response(t)) return t.Header;
+        for (@typeInfo(t).@"struct".decls) |decl| {
+            const D = @field(t, decl.name);
+            if (T == D) return t.Header;
+        }
+    }
+
+    @compileError("Header not found.");
+}
+
+pub fn Response(Messages: type) type {
+    const decls = @typeInfo(Messages).@"struct".decls;
+    const count = decls.len - 1;
+
+    const attrs: [count]Type.UnionField.Attributes = @splat(.{ .@"align" = null });
+    var types: [count]type = undefined;
+    var values: [count]u32 = undefined;
+    var names: [count][]const u8 = undefined;
+
+    var i = 0;
+    for (decls) |decl| {
+        if (mem.eql(u8, decl.name, "Header")) continue;
+        types[i] = @field(Messages, decl.name);
+        values[i] = types[i].code;
+        names[i] = .{ ascii.toLower(decl.name[0]) } ++ decl.name[1..];
+        i += 1;
+    }
+
+    const Tag = @Enum(u32, .exhaustive, &names, &values);
+    return @Union(.@"auto", Tag, &names, &types, &attrs);
+}
+
+pub const client = struct {
+    pub const Header = extern struct {
+        length: u32,
+        code: u32,
+    };
+
     pub const Login = struct {
         pub const code = 1;
 
@@ -50,25 +94,9 @@ pub const server = struct {
         hash: [Md5.digest_length * 2]u8,
         minor: u32 = 1,
 
-        pub const Response = union(Bool) {
-            false: struct {
-                reason: []u8,
-                details: ?[]u8
-            },
-            true: struct {
-                greet: []u8,
-                ip: u32,
-                // If we can rely on pointers to the read buffer, a slice here
-                // would give total control of memory allocations to the
-                // caller. It could also be an array, but I haven't implemented
-                // a way to read them.
-                hash: []u8,
-                supporter: Bool
-            }
-        };
 
         pub fn init(gpa: Allocator, username: []const u8, password: []const u8) !Login {
-            const concat = try std.mem.concat(gpa, u8, &.{ username, password });
+            const concat = try mem.concat(gpa, u8, &.{ username, password });
             defer gpa.free(concat);
             var login: Login = .{
                 .username = concat[0..username.len],
@@ -103,16 +131,6 @@ pub const server = struct {
         pub const code = 3;
 
         username: []const u8,
-
-        pub const Response = struct {
-            username: []u8,
-            ip: u32,
-            port: u32,
-            obfuscation: struct {
-                type: Obfuscation,
-                port: u16 // wtf? u16 ok but why be inconsistent?
-            }
-        };
     };
 
     /// Request stats about a user. The soulseek server does not actually send
@@ -122,15 +140,6 @@ pub const server = struct {
         pub const code = 5;
 
         username: []const u8,
-
-        pub const Response = struct {
-            username: []u8,
-            stats: ?struct {
-                status: Status,
-                stats: UserStats,
-                countrycode: ?[]u8
-            }
-        };
     };
 
     /// Stop watching user. Deprecated?
@@ -138,23 +147,12 @@ pub const server = struct {
         pub const code = 6;
 
         username: []const u8,
-
-        pub const Response = struct {
-            username: []u8,
-            stats: UserStats,
-        };
     };
 
     pub const GetUserStatus = struct {
         pub const code = 7;
 
         username: []const u8,
-
-        pub const Response = struct {
-            username: []u8,
-            status: Status,
-            privileged: Bool,
-        };
     };
 
     pub const SayChatroom = struct {
@@ -162,95 +160,34 @@ pub const server = struct {
 
         room: []const u8,
         message: []const u8,
-
-        pub const Response = struct {
-            room: []u8,
-            username: []u8,
-            message: []u8,
-        };
     };
 
-    // TODO:
-    // pub const JoinRoom = struct {
-    //     pub const code = 14;
+    pub const JoinRoom = struct {
+        pub const code = 14;
 
-    //     room: []const u8,
-    //     private: u32,
-
-    //     pub const Response = struct {
-    //         room: []u8,
-    //         users: [][]u8,
-    //         statuses: []Status,
-    //         stats: []UserStats,
-    //         slotsful: []FatBool,
-    //         countries: [][]u8,
-    //         private: ?struct {
-    //             owner: []u8,
-    //             operators: [][]u8
-    //         }
-    //     };
-    // };
+        room: []const u8,
+        private: u32,
+    };
 
     pub const LeaveRoom = struct {
         pub const code = 15;
 
         room: []const u8,
-
-        pub const Response = struct {
-            room: []u8,
-        };
     };
 
-    pub const UserJoinedRoom = struct {
-        pub const code = 16;
+    pub const ConnectToPeer = struct {
+        pub const code = 18;
 
-        pub const Response = struct {
-            room: []u8,
-            username: []u8,
-            status: Status,
-            stats: UserStats,
-            slotsful: FatBool,
-            countrycode: []u8
-        };
+        token: u32,
+        username: []u8,
+        type: []u8,
     };
-
-    pub const UserLeftRoom = struct {
-        pub const code = 17;
-
-        pub const Response = struct {
-            room: []u8,
-            username: []u8,
-        };
-    };
-
-    // TODO: ConnectionType
-    // pub const ConnectToPeer = struct {
-    //     pub const code = 18;
-
-    //     token: u32,
-    //     username: []u8,
-    //     type: []u8,
-
-    //     pub const Response = struct {
-    //         username: []u8,
-    //         type: ConnectionType,
-    //         ip: u32,
-    //         port: u32,
-    //         token: u32,
-    //         privileged: bool,
-    //         obfuscation: Obfuscation
-    //     };
-    // };
 
     pub const MessageUser = struct {
         pub const code = 22;
 
         username: []const u8,
         message: []const u8,
-
-        pub const Response = struct {
-            username: []u8,
-        };
     };
 
     pub const MessageAcked = struct {
@@ -264,12 +201,6 @@ pub const server = struct {
 
         token: u32,
         query: []u8,
-
-        pub const Response = struct {
-            username: []u8,
-            token: u32,
-            query: []u8,
-        };
     };
 
     pub const SetStatus = struct {
@@ -294,20 +225,14 @@ pub const server = struct {
         pub const code = 36;
 
         username: []const u8,
-
-        pub const Response = struct {
-            username: []u8,
-            stats: UserStats,
-        };
-    };
-
-    pub const Relogged = struct {
-        pub const code = 41;
-        pub const Response = void;
     };
 
     pub const UserSearch = struct {
         pub const code = 42;
+
+        username: []const u8,
+        token: u32,
+        query: []const u8,
     };
 
     pub const AddThingILike = struct {
@@ -322,56 +247,14 @@ pub const server = struct {
         item: []const u8,
     };
 
-    // TODO
-    // pub const Recommendations = struct {
-    //     pub const code = 54;
+    pub const UserInterests = struct {
+        pub const code = 57;
 
-    //     pub const Response = struct {
-    //         recommendations: []Recommendation,
-    //         unrecommendations: []Recommendation,
-    //     };
-    // };
+        username: []const u8,
+    };
 
-    // pub const GlobalRecommendations = struct {
-    //     pub const code = 56;
-    //     pub const Response = Recommendations.Response;
-    // };
-
-    // TODO:
-    // pub const UserInterests = struct {
-    //     pub const code = 57;
-
-    //     username: []const u8,
-
-    //     pub const Response = struct {
-    //         username: []u8,
-    //         liked: [][]u8,
-    //         hated: [][]u8,
-    //     };
-    // };
-
-    // TODO:
-    // pub const RoomList = struct {
-    //     pub const code = 64;
-
-    //     pub const Response = struct {
-    //         const List = struct {
-    //             names: [][]u8,
-    //             users: [][]u32,
-    //         };
-
-    //         public: List,
-    //         private: List,
-    //         abandoned: List,
-    //     };
-    // };
-
-    pub const AdminMessage = struct {
-        pub const code = 66;
-
-        pub const Response = struct {
-            message: []u8
-        };
+    pub const RoomList = struct {
+        pub const code = 64;
     };
 
     // TODO:
@@ -395,22 +278,6 @@ pub const server = struct {
         ip: u32
     };
 
-    pub const ParentMinSpeed = struct {
-        pub const code = 83;
-
-        pub const Response = struct {
-            speed: u32
-        };
-    };
-
-    pub const ParentSpeedRatio = struct {
-        pub const code = 84;
-
-        pub const Response = struct {
-            ratio: u32
-        };
-    };
-
     pub const CheckPrivileges = struct {
         pub const code = 92;
 
@@ -419,33 +286,11 @@ pub const server = struct {
         };
     };
 
-    // TODO:
-    // pub const EmbeddedMessage = struct {
-    //     pub const code = 93;
-
-    //     pub const Response = struct {
-    //         message: main.Response,
-    //     };
-    // };
-
     pub const AcceptChildren = struct {
         pub const code = 100;
 
         accept: Bool
     };
-
-    // TODO:
-    // pub const PossibleParents = struct {
-    //     pub const code = 102;
-
-    //     pub const Response = struct {
-    //         parents: []struct {
-    //             username: []u8,
-    //             ip: u32,
-    //             port: u32
-    //         }
-    //     };
-    // };
 
     pub const WishlistSearch = struct {
         pub const code = 103;
@@ -454,80 +299,20 @@ pub const server = struct {
         query: []const u8,
     };
 
-    pub const WishlistInterval = struct {
-        pub const code = 104;
-
-        pub const Response = struct {
-            interval: u32
-        };
+    pub const SimilarUsers = struct {
+        pub const code = 110;
     };
 
-    // TODO:
-    // pub const SimilarUsers = struct {
-    //     pub const code = 110;
+    pub const ItemRecommendations = struct {
+        pub const code = 111;
 
-    //     pub const Response = struct {
-    //         users: []struct {
-    //             username: []u8,
-    //             rating: u32
-    //         }
-    //     };
-    // };
-
-    // TODO:
-    // pub const ItemRecommendations = struct {
-    //     pub const code = 111;
-
-    //     item: []const u8,
-
-    //     pub const Response = struct {
-    //         item: []u8,
-    //         recommendations: []Recommendation
-    //     };
-    // };
-
-    // TODO:
-    // pub const ItemSimilarUsers = struct {
-    //     pub const code = 112;
-
-    //     item: []const u8,
-
-    //     pub const Response = struct {
-    //         item: []u8,
-    //         users: [][]u32
-    //     };
-    // };
-
-    // TODO:
-    // pub const RoomTickers = struct {
-    //     pub const code = 113;
-
-    //     pub const Response = struct {
-    //         room: []u8,
-    //         users: []struct {
-    //             username: []u8,
-    //             tickers: []u8
-    //         }
-    //     };
-    // };
-
-    pub const RoomTickerAdded = struct {
-        pub const code = 114;
-
-        pub const Response = struct {
-            room: []u8,
-            username: []u8,
-            ticker: []u8
-        };
+        item: []const u8,
     };
 
-    pub const RoomTickerRemoved = struct {
-        pub const code = 115;
+    pub const ItemSimilarUsers = struct {
+        pub const code = 112;
 
-        pub const Response = struct {
-            room: []u8,
-            ticker: []u8
-        };
+        item: []const u8,
     };
 
     pub const SetRoomTicker = struct {
@@ -586,11 +371,6 @@ pub const server = struct {
 
         token: u32,
         username: []const u8,
-
-        pub const Response = struct {
-            token: u32,
-            username: []u8,
-        };
     };
 
     pub const AckNotifyPrivileges = struct {
@@ -615,30 +395,11 @@ pub const server = struct {
         pub const code = 130;
     };
 
-    // TODO:
-    // pub const RoomMembers = struct {
-    //     pub const code = 133;
-
-    //     pub const Response = struct {
-    //         room: []u8,
-    //         members: [][]u8,
-    //     };
-    // };
-
-    // It is tempting to make room and username into a struct that could be
-    // used here and in other places as well, but I'm not sure how to handle
-    // the differing constness of the child slices cleanly in zig. A function
-    // that returns a type feels over the top here.
     pub const AddRoomMember = struct {
         pub const code = 134;
 
         room: []const u8,
         username: []const u8,
-
-        pub const Response = struct {
-            room: []u8,
-            username: []u8,
-        };
     };
 
     pub const RemoveRoomMember = struct {
@@ -646,11 +407,6 @@ pub const server = struct {
 
         room: []const u8,
         username: []const u8,
-
-        pub const Response = struct {
-            room: []u8,
-            username: []u8,
-        };
     };
 
     pub const CancelRoomMembership = struct {
@@ -665,40 +421,16 @@ pub const server = struct {
         room: []const u8
     };
 
-    pub const RoomMembershipGranted = struct {
-        pub const code = 139;
-
-        pub const Response = struct {
-            room: []u8
-        };
-    };
-
-    pub const RoomMembershipRevoked = struct {
-        pub const code = 140;
-
-        pub const Response = struct {
-            room: []u8
-        };
-    };
-
     pub const EnableRoomInvitations = struct {
         pub const code = 141;
 
         enable: Bool,
-
-        pub const Response = struct {
-            enable: Bool,
-        };
     };
 
     pub const ChangePassword = struct {
         pub const code = 142;
 
         pass: []const u8,
-
-        pub const Response = struct {
-            pass: []u8
-        };
     };
 
     pub const AddRoomOperator = struct {
@@ -706,11 +438,6 @@ pub const server = struct {
 
         room: []const u8,
         username: []const u8,
-
-        pub const Response = struct {
-            room: []u8,
-            username: []u8,
-        };
     };
 
     pub const RemoveRoomOperator = struct {
@@ -718,45 +445,14 @@ pub const server = struct {
 
         room: []const u8,
         username: []const u8,
-
-        pub const Response = struct {
-            room: []u8,
-            username: []u8,
-        };
-    };
-
-    pub const RoomOperatorshipGranted = struct {
-        pub const code = 145;
-
-        pub const Response = struct {
-            room: []u8
-        };
-    };
-
-    pub const RoomOperatorshipRevoked = struct {
-        pub const code = 146;
-
-        pub const Response = struct {
-            room: []u8
-        };
     };
 
     // TODO:
-    // pub const RoomOperators = struct {
-    //     pub const code = 148;
+    // pub const MessageUsers = struct {
+    //     pub const code = 149;
 
-    //     pub const Response = struct {
-    //         room: []u8,
-    //         operators: [][]u8
-    //     };
+    //     users: []const []const u8,
     // };
-
-    pub const MessageUsers = struct {
-        pub const code = 149;
-
-        // TODO:
-        users: []const []const u8,
-    };
 
     pub const JoinGlobalRoom = struct {
         pub const code = 150;
@@ -766,74 +462,384 @@ pub const server = struct {
         pub const code = 151;
     };
 
+    pub const CantConnectToPeer = struct {
+        pub const code = 1001;
+
+        token: u32,
+        username: []const u8,
+    };
+};
+
+pub const server = struct {
+    pub const Header = client.Header;
+
+    pub const Login = union(Bool) {
+        pub const code = 1;
+
+        false: struct {
+            reason: []const u8,
+            details: ?[]const u8
+        },
+        true: struct {
+            greet: []const u8,
+            ip: u32,
+            hash: []const u8,
+            supporter: Bool
+        }
+    };
+
+    pub const GetPeerAddress = struct {
+        pub const code = 3;
+
+        username: []const u8,
+        ip: u32,
+        port: u32,
+        obfuscation: struct {
+            type: Obfuscation,
+            port: u16 // wtf? u16 ok but why be inconsistent?
+        }
+    };
+
+    pub const WatchUser = struct {
+        pub const code = 5;
+
+        username: []const u8,
+        stats: ?struct {
+            status: Status,
+            stats: UserStats,
+            countrycode: ?[]const u8
+        }
+    };
+
+    pub const UnwatchUser = struct {
+        pub const code = 6;
+
+        username: []const u8,
+        stats: UserStats,
+    };
+
+    pub const GetUserStatus = struct {
+        pub const code = 7;
+
+        username: []const u8,
+        status: Status,
+        privileged: Bool,
+    };
+
+    pub const SayChatroom = struct {
+        pub const code = 13;
+
+        room: []const u8,
+        username: []const u8,
+        message: []const u8,
+    };
+
+    // TODO:
+    // pub const JoinRoom = struct {
+    //     pub const code = 14;
+
+    //     room: []const u8,
+    //     users: []const []const u8,
+    //     statuses: []const Status,
+    //     stats: []const UserStats,
+    //     slotsful: []const FatBool,
+    //     countries: []const []const u8,
+    //     private: ?struct {
+    //         owner: []const u8,
+    //         operators: []const []const u8
+    //     }
+    // };
+
+    pub const LeaveRoom = client.LeaveRoom;
+
+    pub const UserJoinedRoom = struct {
+        pub const code = 16;
+
+        room: []const u8,
+        username: []const u8,
+        status: Status,
+        stats: UserStats,
+        slotsful: FatBool,
+        countrycode: []const u8
+    };
+
+    pub const UserLeftRoom = struct {
+        pub const code = 17;
+
+        room: []const u8,
+        username: []const u8,
+    };
+
+    // TODO: ConnectionType
+    // pub const ConnectToPeer = struct {
+    //     pub const code = 18;
+
+    //     username: []const u8,
+    //     type: ConnectionType,
+    //     ip: u32,
+    //     port: u32,
+    //     token: u32,
+    //     privileged: bool,
+    //     obfuscation: Obfuscation
+    // };
+
+    pub const MessageUser = struct {
+        pub const code = 22;
+
+        id: u32,
+        timestamp: u32,
+        username: []const u8,
+        message: []const u8,
+        new: Bool
+    };
+
+    pub const SetStatus = struct {
+        pub const code = 28;
+
+        username: []const u8,
+        token: u32,
+        query: []const u8,
+    };
+
+    pub const GetUserStats = struct {
+        pub const code = 36;
+
+        username: []const u8,
+        stats: UserStats,
+    };
+
+    pub const Relogged = struct {
+        pub const code = 41;
+    };
+
+    pub const Recommendations = struct {
+        pub const code = 54;
+
+        // recommendations: []const Recommendation,
+        // unrecommendations: []const Recommendation,
+    };
+
+    pub const GlobalRecommendations = struct {
+        pub const code = 56;
+
+        // recommendations: []const Recommendation,
+        // unrecommendations: []const Recommendation,
+    };
+
+    // TODO:
+    // pub const UserInterests = struct {
+    //     pub const code = 57;
+
+    //     username: []const u8,
+    //     liked: []const []const u8,
+    //     hated: []const []const u8,
+    // };
+
+    // TODO:
+    // pub const RoomList = struct {
+    //     pub const code = 64;
+    //     const List = struct {
+    //         names: []const []const u8,
+    //         users: []const []const u32,
+    //     };
+
+    //     public: List,
+    //     private: List,
+    //     abandoned: List,
+    // };
+
+    pub const AdminMessage = struct {
+        pub const code = 66;
+
+        message: []const u8
+    };
+
+    pub const ParentMinSpeed = struct {
+        pub const code = 83;
+
+        speed: u32
+    };
+
+    pub const ParentSpeedRatio = struct {
+        pub const code = 84;
+
+        ratio: u32
+    };
+
+    // TODO:
+    // pub const EmbeddedMessage = struct {
+    //     pub const code = 93;
+
+    //     message: Response,
+    // };
+
+    // TODO:
+    // pub const PossibleParents = struct {
+    //     pub const code = 102;
+
+    //         parents: []const struct {
+    //             username: []const u8,
+    //             ip: u32,
+    //             port: u32
+    //         }
+    // };
+
+    pub const WishlistInterval = struct {
+        pub const code = 104;
+
+        interval: u32
+    };
+
+    // TODO:
+    // pub const SimilarUsers = struct {
+    //     pub const code = 110;
+    //     users: []const struct {
+    //         username: []const u8,
+    //         rating: u32
+    //     }
+    // };
+
+    // TODO:
+    // pub const ItemRecommendations = struct {
+    //     pub const code = 111;
+
+    //     item: []const u8,
+    //     recommendations: []const Recommendation
+    // };
+
+    // TODO:
+    // pub const ItemSimilarUsers = struct {
+    //     pub const code = 112;
+
+    //     item: []const u8,
+    //     users: []const []const u32
+    // };
+
+    // TODO:
+    // pub const RoomTickers = struct {
+    //     pub const code = 113;
+
+    //     room: []const u8,
+    //     users: []const struct {
+    //         username: []const u8,
+    //         tickers: []const u8
+    //     }
+    // };
+
+    pub const RoomTickerAdded = struct {
+        pub const code = 114;
+
+        room: []const u8,
+        username: []const u8,
+        ticker: []const u8
+    };
+
+    pub const RoomTickerRemoved = struct {
+        pub const code = 115;
+
+        room: []const u8,
+        ticker: []const u8
+    };
+
+    pub const UserPrivileged = struct {
+        pub const code = 122;
+
+        username: []const u8,
+        privileged: Bool
+    };
+
+    pub const NotifyPrivileges = struct {
+        pub const code = 124;
+
+        token: u32,
+        username: []const u8,
+    };
+
+    pub const AckNotifyPrivileges = struct {
+        pub const code = 125;
+
+        token: u32,
+    };
+
+    // TODO:
+    // pub const RoomMembers = struct {
+    //     pub const code = 133;
+
+    //     room: []const u8,
+    //     members: []const []const u8,
+    // };
+
+    pub const AddRoomMember = client.AddRoomMember;
+    pub const RemoveRoomMember = client.RemoveRoomMember;
+
+    pub const RoomMembershipGranted = struct {
+        pub const code = 139;
+
+        room: []const u8
+    };
+
+    pub const RoomMembershipRevoked = struct {
+        pub const code = 140;
+
+        room: []const u8
+    };
+
+    pub const EnableRoomInvitations = client.EnableRoomInvitations;
+    pub const ChangePassword = client.ChangePassword;
+
+    pub const AddRoomOperator = client.AddRoomOperator;
+    pub const RemoveRoomOperator = client.RemoveRoomOperator;
+
+    pub const RoomOperatorshipGranted = struct {
+        pub const code = 145;
+
+        room: []const u8
+    };
+
+    pub const RoomOperatorshipRevoked = struct {
+        pub const code = 146;
+
+        room: []const u8
+    };
+
+    // TODO:
+    // pub const RoomOperators = struct {
+    //     pub const code = 148;
+
+    //     room: []const u8,
+    //     operators: []const []const u8
+    // };
+
     pub const GlobalRoomMessage = struct {
         pub const code = 152;
 
-        pub const response = struct { 
-            room: []u8,
-            username: []u8,
-            message: []u8
-        };
+        room: []const u8,
+        username: []const u8,
+        message: []const u8
     };
 
     // pub const ExcludedSearchPhrases = struct {
     //     pub const code = 160;
 
-    //     pub const Response = struct {
-    //         phrases: [][]u8
-    //     };
+    //     phrases: []const []const u8
     // };
 
     pub const CantConnectToPeer = struct {
         pub const code = 1001;
 
         token: u32,
-        username: []const u8,
-
-        pub const Response = struct {
-            token: u32
-        };
     };
 
     pub const CantCreateRoom = struct {
         pub const code = 1003;
 
-        pub const Response = struct {
-            room: []u8
-        };
+        room: []const u8
     };
 };
 
-/// Tagged unions for different response types.
-pub const responses = struct {
-    fn Responses(Messages: type) type {
-        const decls = @typeInfo(Messages).@"struct".decls;
-        var filtered: [decls.len]Type.Declaration = undefined;
-
-        var count = 0;
-        for (decls) |decl| {
-            const Request = @field(Messages, decl.name);
-            if (@hasDecl(Request, "Response")) {
-                filtered[count] = decl;
-                count += 1;
-            }
-        }
-
-        const attrs: [count]Type.UnionField.Attributes = @splat(.{ .@"align" = null });
-        var types: [count]type = undefined;
-        var values: [count]u32 = undefined;
-        var names: [count][]const u8 = undefined;
-
-        for (filtered[0..count], &names, &types, &values) |decl, *name, *T, *value| {
-            const Request = @field(Messages, decl.name);
-            T.* = Request.Response;
-            value.* = Request.code;
-            name.* = .{ ascii.toLower(decl.name[0]) } ++ decl.name[1..];
-        }
-
-        const Tag = @Enum(u32, .exhaustive, &names, &values);
-        return @Union(.@"auto", Tag, &names, &types, &attrs);
-    }
-
-    pub const Server = Responses(server);
+pub const init = struct {
+    pub const Header = extern struct {
+        length: u32,
+        code: u8,
+    };
 };

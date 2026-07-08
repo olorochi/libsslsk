@@ -1,19 +1,19 @@
 const std = @import("std");
-const meta = std.meta;
 const Allocator = std.mem.Allocator;
-const Writer = std.Io.Writer;
+const HostName = std.Io.net.HostName;
+const meta = std.meta;
+const mem = std.mem;
 const Reader = std.Io.Reader;
 const Type = std.builtin.Type;
-const HostName = std.Io.net.HostName;
-const messages = @import("messages.zig");
+const Writer = std.Io.Writer;
+pub const messages = @import("messages.zig");
+const Header = messages.Header;
+const Response = messages.Response;
 
 fn allocate(T: type) T {
     return undefined;
 }
 
-// Maybe this is a bad name? Static memory is more of a mechanism here. The
-// best use of this function is to transform a temporary (const in zig) to a
-// mutable type, at the cost of a dereference in static memory.
 fn static(comptime v: anytype) *@TypeOf(v) {
     const Static = struct { var mem = v; };
     return &Static.mem;
@@ -22,26 +22,6 @@ fn static(comptime v: anytype) *@TypeOf(v) {
 fn TagPayload(U: type, tag: meta.Tag(U)) type {
     return @FieldType(U, @tagName(tag));
 }
-
-// I really wish zig had a @ReturnType builtin.
-fn SelectT(values: anytype, comptime field: []const u8) type {
-    return [values.len]@FieldType(meta.Child(@TypeOf(values)), field);
-}
-
-fn select(values: anytype, comptime field: []const u8) SelectT(values, field) {
-    var fields: SelectT(values, field) = undefined;
-    for (values, &fields) |v, *f| {
-        f.* = @field(v, field);
-    }
-
-    return fields;
-}
-
-const Header = extern struct {
-    length: u32,
-    code: u32,
-};
-
 
 fn write(writer: *Writer, message: anytype) !void {
     const T = @TypeOf(message);
@@ -56,7 +36,7 @@ fn write(writer: *Writer, message: anytype) !void {
         };
     }
 
-    try writer.writeStruct(Header{ .length = len, .code = T.code}, .little);
+    try writer.writeStruct(Header(T){ .length = len, .code = T.code}, .little);
     inline for (fields) |field| {
         const value = @field(message, field.name);
         switch (@typeInfo(field.type)) {
@@ -74,7 +54,7 @@ fn writeString(writer: *Writer, s: []const u8) !void {
 
 const invalidHeader = error.InvalidHeader;
 fn read(gpa: Allocator, reader: *Reader, comptime U: type) !U {
-    const header = try reader.takeStruct(Header, .little);
+    const header = try reader.takeStruct(Header(U), .little);
     const tag = std.enums.fromInt(meta.Tag(U), header.code) orelse return invalidHeader;
     return readUnion(U, gpa, reader, tag);
 }
@@ -127,9 +107,9 @@ pub fn main(init: std.process.Init) !void {
     var reader = stream.reader(init.io, static(allocate([4096]u8)));
     var writer = stream.writer(init.io, static(allocate([1024]u8)));
 
-    try write(&writer.interface, try messages.server.Login.init(init.gpa, "username", "pass"));
+    try write(&writer.interface, try messages.client.Login.init(init.gpa, "username", "pass"));
     try writer.interface.flush();
 
-    const response = try read(init.gpa, &reader.interface, messages.responses.Server);
+    const response = try read(init.gpa, &reader.interface, Response(messages.server));
     std.debug.print("{s}\n", .{ response.login.false.reason });
 }
