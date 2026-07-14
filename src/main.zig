@@ -3,12 +3,16 @@ const Allocator = std.mem.Allocator;
 const HostName = std.Io.net.HostName;
 const meta = std.meta;
 const mem = std.mem;
+const print = std.debug.print;
 const Reader = std.Io.Reader;
 const Type = std.builtin.Type;
 const Writer = std.Io.Writer;
+
 pub const messages = @import("messages.zig");
 const Header = messages.Header;
-const Response = messages.Response;
+pub const Response = messages.Response;
+pub const client = messages.client;
+pub const server = messages.server;
 
 fn allocate(T: type) T {
     return undefined;
@@ -23,7 +27,7 @@ fn TagPayload(U: type, tag: meta.Tag(U)) type {
     return @FieldType(U, @tagName(tag));
 }
 
-fn write(writer: *Writer, message: anytype) !void {
+pub fn write(writer: *Writer, message: anytype) !void {
     const T = @TypeOf(message);
     const fields = @typeInfo(T).@"struct".fields;
 
@@ -36,7 +40,7 @@ fn write(writer: *Writer, message: anytype) !void {
         };
     }
 
-    try writer.writeStruct(Header(T){ .length = len, .code = T.code}, .little);
+    try writer.writeStruct(Header(T){ .len = len, .code = T.code}, .little);
     inline for (fields) |field| {
         const value = @field(message, field.name);
         switch (@typeInfo(field.type)) {
@@ -52,51 +56,69 @@ fn writeString(writer: *Writer, s: []const u8) !void {
     try writer.writeAll(s);
 }
 
-const invalidHeader = error.InvalidHeader;
-fn read(gpa: Allocator, reader: *Reader, comptime U: type) !U {
-    const header = try reader.takeStruct(Header(U), .little);
-    const tag = std.enums.fromInt(meta.Tag(U), header.code) orelse return invalidHeader;
-    return readUnion(U, gpa, reader, tag);
+const ReadProgress = struct {
+    current: u32,
+    end: u32
+};
+
+pub fn read(gpa: Allocator, reader: *Reader, ResponseT: type) !ResponseT {
+    const header = try reader.takeStruct(Header(ResponseT), .little);
+    const tag = std.enums.fromInt(meta.Tag(ResponseT), header.code)
+        orelse return error.invalidCode;
+
+    var progress = ReadProgress{ .current = @sizeOf(@TypeOf(header.len)), .end = header.len };
+    const response = readUnion(ResponseT, gpa, reader, tag, &progress);
+    if (progress.current != progress.end) {
+        return error.invalidLength;
+    }
+    return response;
 }
 
-fn readT(T: type, gpa: Allocator, reader: *Reader) !T {
-    return sw: switch (@typeInfo(T)) {
+fn readT(gpa: Allocator, reader: *Reader, T: type, progress: *ReadProgress) !T {
+    if (progress.current > progress.end) return error.invalidLength;
+
+    var t: T = undefined;
+    switch (@typeInfo(T)) {
         .@"union" => {
             const tag = try reader.takeEnum(meta.Tag(T), .little);
-            break :sw try readUnion(T, gpa, reader, tag);
+            progress.current += @sizeOf(meta.Tag(T));
+            t = try readUnion(T, gpa, reader, tag, progress);
         },
         .@"struct" => {
-            var t: T = undefined;
-            inline for (@typeInfo(T).@"struct".fields) |field| {
-                @field(t, field.name) = try readT(field.type, gpa, reader);
-            }
-
-            break :sw t;
+            inline for (@typeInfo(T).@"struct".fields) |field|
+                @field(t, field.name) = try readT(gpa, reader, field.type, progress);
         },
         .@"pointer" => {
             const size = try reader.takeInt(u32, .little);
-            // TODO: This leaks memory. I unfortunately don't think I can
-            // remove this allocation since some responses could be larger than
-            // the read buffer. Regardless, I'm putting off writing a Response
-            // deallocator for now.
-            const slice = try gpa.alloc(u8, size);
-            @memcpy(slice, try reader.take(size));
-            break :sw slice;
+            progress.current += @sizeOf(u32);
+            const Child = meta.Child(T);
+
+            // TODO: Response deallocator.
+            const slice = try gpa.alloc(Child, size);
+            for (0..size) |i| slice[i] = try readT(gpa, reader, Child, progress);
+            t = slice;
         },
-        .@"enum" => try reader.takeEnum(T, .little),
-        // TODO: This requires passing around the header and either summing
-        // read bytes or finding out where the zig io interface guarantees
-        // pointer validity. I should be checking message lenghts anyways.
-        .optional => null,
+        .@"enum" => {
+            t = try reader.takeEnum(T, .little);
+            progress.current += @sizeOf(T);
+        },
+         // Optionals can only ever be at the end of a message.
+        .optional => t = if (progress.current == progress.end) null
+            else try readT(gpa, reader, meta.Child(T), progress),
         .void => {},
-        else => try reader.takeInt(T, .little),
-    };
+        else => {
+            t = try reader.takeInt(T, .little);
+            progress.current += @sizeOf(T);
+        },
+    }
+
+    return t;
 }
 
-fn readUnion(U: type, gpa: Allocator, reader: *Reader, tag: meta.Tag(U)) !U {
+fn readUnion(U: type, gpa: Allocator, reader: *Reader, tag: meta.Tag(U), progress: *ReadProgress) !U {
     switch (tag) {
         inline else => |code| {
-            return @unionInit(U, @tagName(code), try readT(TagPayload(U, code), gpa, reader));
+            return @unionInit(U, @tagName(code), try readT(gpa, reader, TagPayload(U, code), progress));
         }
     }
 }
@@ -104,12 +126,31 @@ fn readUnion(U: type, gpa: Allocator, reader: *Reader, tag: meta.Tag(U)) !U {
 pub fn main(init: std.process.Init) !void {
     const hostname = try HostName.init("server.slsknet.org");
     const stream = try HostName.connect(hostname, init.io, 2242, .{ .mode = .stream, .protocol = .tcp }); // TODO: timeout
-    var reader = stream.reader(init.io, static(allocate([4096]u8)));
-    var writer = stream.writer(init.io, static(allocate([1024]u8)));
+    var r_back = stream.reader(init.io, static(allocate([4096]u8)));
+    var w_back = stream.writer(init.io, static(allocate([1024]u8)));
+    const reader = &r_back.interface;
+    var writer = &w_back.interface;
 
-    try write(&writer.interface, try messages.client.Login.init(init.gpa, "username", "pass"));
-    try writer.interface.flush();
+    try write(writer, try client.Login.init(init.gpa, "username", "password"));
+    try writer.flush();
 
-    const response = try read(init.gpa, &reader.interface, Response(messages.server));
-    std.debug.print("{s}\n", .{ response.login.false.reason });
+    while (true) {
+        const response = try read(init.gpa, reader, Response(server));
+        switch (response) {
+            .login => switch(response.login) {
+                .true => print("Login sucessful!\n", .{}),
+                .false => |r| {
+                    print("Login rejected: '{s}'!\n", .{ r.reason });
+                    return;
+                },
+            },
+            else => {
+                const tag = meta.activeTag(response);
+                print("WARNING: No handler for response {}: '{s}'.\n", .{
+                    @intFromEnum(tag),
+                    @tagName(tag)
+                });
+            }
+        }
+    }
 }
