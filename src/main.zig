@@ -19,7 +19,9 @@ fn allocate(T: type) T {
 }
 
 fn static(comptime v: anytype) *@TypeOf(v) {
-    const Static = struct { var mem = v; };
+    const Static = struct {
+        var mem = v;
+    };
     return &Static.mem;
 }
 
@@ -33,20 +35,19 @@ pub fn write(writer: *Writer, message: anytype) !void {
 
     var len: u32 = @sizeOf(u32);
     inline for (fields) |field| {
-        len += switch(@typeInfo(field.type)) {
-            .pointer,
-            .array => @intCast(@sizeOf(u32) + @field(message, field.name).len),
-            else => @sizeOf(field.type)
+        len += switch (@typeInfo(field.type)) {
+            .pointer, .array => @intCast(@sizeOf(u32) + @field(message, field.name).len),
+            else => @sizeOf(field.type),
         };
     }
 
-    try writer.writeStruct(Header(T){ .len = len, .code = T.code}, .little);
+    try writer.writeStruct(Header(T){ .len = len, .code = T.code }, .little);
     inline for (fields) |field| {
         const value = @field(message, field.name);
         switch (@typeInfo(field.type)) {
             .pointer => try writeString(writer, value),
             .array => try writeString(writer, &value),
-            else => try writer.writeInt(field.type, value, .little)
+            else => try writer.writeInt(field.type, value, .little),
         }
     }
 }
@@ -56,15 +57,11 @@ fn writeString(writer: *Writer, s: []const u8) !void {
     try writer.writeAll(s);
 }
 
-const ReadProgress = struct {
-    current: u32,
-    end: u32
-};
+const ReadProgress = struct { current: u32, end: u32 };
 
 pub fn read(gpa: Allocator, reader: *Reader, ResponseT: type) !ResponseT {
     const header = try reader.takeStruct(Header(ResponseT), .little);
-    const tag = std.enums.fromInt(meta.Tag(ResponseT), header.code)
-        orelse return error.invalidCode;
+    const tag = std.enums.fromInt(meta.Tag(ResponseT), header.code) orelse return error.invalidCode;
 
     var progress = ReadProgress{ .current = @sizeOf(@TypeOf(header.len)), .end = header.len };
     const response = readUnion(ResponseT, gpa, reader, tag, &progress);
@@ -88,7 +85,7 @@ fn readT(gpa: Allocator, reader: *Reader, T: type, progress: *ReadProgress) !T {
             inline for (@typeInfo(T).@"struct".fields) |field|
                 @field(t, field.name) = try readT(gpa, reader, field.type, progress);
         },
-        .@"pointer" => {
+        .pointer => {
             const size = try reader.takeInt(u32, .little);
             progress.current += @sizeOf(u32);
             const Child = meta.Child(T);
@@ -102,9 +99,8 @@ fn readT(gpa: Allocator, reader: *Reader, T: type, progress: *ReadProgress) !T {
             t = try reader.takeEnum(T, .little);
             progress.current += @sizeOf(T);
         },
-         // Optionals can only ever be at the end of a message.
-        .optional => t = if (progress.current == progress.end) null
-            else try readT(gpa, reader, meta.Child(T), progress),
+        // Optionals can only ever be at the end of a message.
+        .optional => t = if (progress.current == progress.end) null else try readT(gpa, reader, meta.Child(T), progress),
         .void => {},
         else => {
             t = try reader.takeInt(T, .little);
@@ -119,7 +115,7 @@ fn readUnion(U: type, gpa: Allocator, reader: *Reader, tag: meta.Tag(U), progres
     switch (tag) {
         inline else => |code| {
             return @unionInit(U, @tagName(code), try readT(gpa, reader, TagPayload(U, code), progress));
-        }
+        },
     }
 }
 
@@ -137,20 +133,17 @@ pub fn main(init: std.process.Init) !void {
     while (true) {
         const response = try read(init.gpa, reader, Response(server));
         switch (response) {
-            .login => switch(response.login) {
+            .login => switch (response.login) {
                 .true => print("Login sucessful!\n", .{}),
                 .false => |r| {
-                    print("Login rejected: '{s}'!\n", .{ r.reason });
+                    print("Login rejected: '{s}'!\n", .{r.reason});
                     return;
                 },
             },
             else => {
                 const tag = meta.activeTag(response);
-                print("WARNING: No handler for response {}: '{s}'.\n", .{
-                    @intFromEnum(tag),
-                    @tagName(tag)
-                });
-            }
+                print("WARNING: No handler for response {}: '{s}'.\n", .{ @intFromEnum(tag), @tagName(tag) });
+            },
         }
     }
 }
