@@ -71,6 +71,20 @@ pub fn read(gpa: Allocator, reader: *Reader, ResponseT: type) !ResponseT {
     return response;
 }
 
+pub fn freeResponse(gpa: Allocator, response: anytype) void {
+    const T = @TypeOf(response);
+    switch (@typeInfo(T)) {
+        .pointer => gpa.free(response),
+        .optional => if (response) |v| freeResponse(gpa, v),
+        .@"struct" => inline for (@typeInfo(T).@"struct".fields) |field|
+            freeResponse(gpa, @field(response, field.name)),
+        .@"union" => switch (response) {
+            inline else => |payload| freeResponse(gpa, payload),
+        },
+        else => {},
+    }
+}
+
 fn readT(gpa: Allocator, reader: *Reader, T: type, progress: *ReadProgress) !T {
     if (progress.current > progress.end) return error.invalidLength;
 
@@ -90,7 +104,6 @@ fn readT(gpa: Allocator, reader: *Reader, T: type, progress: *ReadProgress) !T {
             progress.current += @sizeOf(u32);
             const Child = meta.Child(T);
 
-            // TODO: Response deallocator.
             const slice = try gpa.alloc(Child, size);
             for (0..size) |i| slice[i] = try readT(gpa, reader, Child, progress);
             t = slice;
@@ -119,25 +132,28 @@ fn readUnion(U: type, gpa: Allocator, reader: *Reader, tag: meta.Tag(U), progres
     }
 }
 
-pub fn main(init: std.process.Init) !void {
+pub fn main(init: std.process.Init) !u8 {
     const hostname = try HostName.init("server.slsknet.org");
     const stream = try HostName.connect(hostname, init.io, 2242, .{ .mode = .stream, .protocol = .tcp }); // TODO: timeout
     var r_back = stream.reader(init.io, static(allocate([4096]u8)));
     var w_back = stream.writer(init.io, static(allocate([1024]u8)));
     const reader = &r_back.interface;
-    var writer = &w_back.interface;
+    const writer = &w_back.interface;
 
     try write(writer, try client.Login.init(init.gpa, "username", "password"));
     try writer.flush();
 
-    while (true) {
+    var exit = false;
+    while (!exit) {
         const response = try read(init.gpa, reader, Response(server));
         switch (response) {
             .login => switch (response.login) {
-                .true => print("Login sucessful!\n", .{}),
+                .true => {
+                    print("Login sucessful!\n", .{});
+                },
                 .false => |r| {
                     print("Login rejected: '{s}'!\n", .{r.reason});
-                    return;
+                    exit = true;
                 },
             },
             else => {
@@ -145,5 +161,9 @@ pub fn main(init: std.process.Init) !void {
                 print("WARNING: No handler for response {}: '{s}'.\n", .{ @intFromEnum(tag), @tagName(tag) });
             },
         }
+
+        freeResponse(init.gpa, response);
     }
+
+    return 0;
 }
