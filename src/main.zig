@@ -14,6 +14,10 @@ pub const Response = messages.Response;
 pub const client = messages.client;
 pub const server = messages.server;
 
+pub const std_options = std.Options{
+    .fmt_max_depth = 5,
+};
+
 fn allocate(T: type) T {
     return undefined;
 }
@@ -99,11 +103,19 @@ fn readT(gpa: Allocator, reader: *Reader, T: type, progress: *ReadProgress) !T {
             inline for (@typeInfo(T).@"struct".fields) |field|
                 @field(t, field.name) = try readT(gpa, reader, field.type, progress);
         },
+        .array => {
+            const size = try reader.takeInt(u32, .little);
+            progress.current += @sizeOf(u32);
+            if (size != t.len) return error.invalidField;
+
+            const Child = meta.Child(T);
+            for (0..t.len) |i| t[i] = try readT(gpa, reader, Child, progress);
+        },
         .pointer => {
             const size = try reader.takeInt(u32, .little);
             progress.current += @sizeOf(u32);
-            const Child = meta.Child(T);
 
+            const Child = meta.Child(T);
             const slice = try gpa.alloc(Child, size);
             for (0..size) |i| slice[i] = try readT(gpa, reader, Child, progress);
             t = slice;
@@ -143,22 +155,21 @@ pub fn main(init: std.process.Init) !u8 {
     try write(writer, try client.Login.init(init.gpa, "username", "password"));
     try writer.flush();
 
-    var exit = false;
-    while (!exit) {
-        const response = try read(init.gpa, reader, Response(server));
+    inline for (.{ messages.client, messages.server, messages.peer, messages.distributed }) |t| {
+        const response = try read(init.gpa, reader, Response(t));
         switch (response) {
-            .login => switch (response.login) {
-                .true => {
-                    print("Login sucessful!\n", .{});
-                },
-                .false => |r| {
-                    print("Login rejected: '{s}'!\n", .{r.reason});
-                    exit = true;
-                },
-            },
+            // .login => switch (response.login) {
+            //     .true => {
+            //         print("Login sucessful!\n", .{});
+            //     },
+            //     .false => |r| {
+            //         print("Login rejected: '{s}'!\n", .{r.reason});
+            //         exit = true;
+            //     },
+            // },
             else => {
                 const tag = meta.activeTag(response);
-                print("WARNING: No handler for response {}: '{s}'.\n", .{ @intFromEnum(tag), @tagName(tag) });
+                print("WARNING: No handler for response {}: '{s}'.\n{any}\n\n", .{ @intFromEnum(tag), @tagName(tag), response });
             },
         }
 

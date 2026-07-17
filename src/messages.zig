@@ -4,31 +4,23 @@ const ascii = std.ascii;
 const Type = std.builtin.Type;
 const Md5 = std.crypto.hash.Md5;
 const mem = std.mem;
-const meta = std.meta;
-const messages = @This();
 
-const FatBool = enum(u8) { false = 0, true = 1 };
-
+const FatBool = enum(u32) { false = 0, true = 1 };
 const Bool = enum(u8) { false = 0, true = 1 };
 
 const Obfuscation = enum(u32) { none = 0, rotated = 1 };
 
 const Status = enum(u8) { offline = 0, away = 1, online = 2 };
 
-const UserStats = struct {
-    username: []const u8,
-    avgspeed: u32,
-    uploadnum: u32,
-    unknown: u32,
-    files: u32,
-    dirs: u32,
-};
+const ConnectionType = [1]enum(u8) { p2p = 'P', file = 'F', distributed = 'D' };
+
+const Hash = [Md5.digest_length * 2]u8;
 
 const Recommendation = struct { recommendation: []const u8, recommendations: i32 };
 
 /// Returns the header type associated with request or response union T.
 pub fn Header(T: type) type {
-    const types = .{ client, server, init };
+    const types = .{ client, server, init, peer, distributed };
 
     for (types) |t| {
         if (T == Response(t)) return t.Header;
@@ -38,7 +30,7 @@ pub fn Header(T: type) type {
         }
     }
 
-    @compileError("Header not found.");
+    @compileError("Header not found for " ++ @typeName(T) ++ ".");
 }
 
 pub fn Response(Messages: type) type {
@@ -75,7 +67,7 @@ pub const client = struct {
         username: []const u8,
         password: []const u8,
         major: u32 = 177,
-        hash: [Md5.digest_length * 2]u8,
+        hash: Hash,
         minor: u32 = 1,
 
         pub fn init(gpa: Allocator, username: []const u8, password: []const u8) !Login {
@@ -156,7 +148,7 @@ pub const client = struct {
 
         token: u32,
         username: []const u8,
-        type: []const u8,
+        type: ConnectionType,
     };
 
     pub const MessageUser = struct {
@@ -413,6 +405,7 @@ pub const client = struct {
         pub const code = 149;
 
         users: []const []const u8,
+        message: []const u8,
     };
 
     pub const JoinGlobalRoom = struct {
@@ -434,11 +427,20 @@ pub const client = struct {
 pub const server = struct {
     pub const Header = client.Header;
 
+    const UserStats = struct {
+        username: []const u8,
+        avgspeed: u32,
+        uploadnum: u32,
+        unknown: u32,
+        files: u32,
+        dirs: u32,
+    };
+
     pub const Login = union(Bool) {
         pub const code = 1;
 
         false: struct { reason: []const u8, details: ?[]const u8 },
-        true: struct { greet: []const u8, ip: u32, hash: []const u8, supporter: Bool },
+        true: struct { greet: []const u8, ip: u32, hash: Hash, supporter: Bool },
     };
 
     pub const GetPeerAddress = struct {
@@ -515,18 +517,17 @@ pub const server = struct {
         username: []const u8,
     };
 
-    // TODO: ConnectionType
-    // pub const ConnectToPeer = struct {
-    //     pub const code = 18;
+    pub const ConnectToPeer = struct {
+        pub const code = 18;
 
-    //     username: []const u8,
-    //     type: ConnectionType,
-    //     ip: u32,
-    //     port: u32,
-    //     token: u32,
-    //     privileged: bool,
-    //     obfuscation: Obfuscation
-    // };
+        username: []const u8,
+        type: ConnectionType,
+        ip: u32,
+        port: u32,
+        token: u32,
+        privileged: Bool,
+        obfuscation: Obfuscation,
+    };
 
     pub const MessageUser = struct {
         pub const code = 22;
@@ -616,12 +617,7 @@ pub const server = struct {
         ratio: u32,
     };
 
-    // TODO:
-    // pub const EmbeddedMessage = struct {
-    //     pub const code = 93;
-
-    //     message: Response,
-    // };
+    pub const EmbeddedMessage = distributed.DistribEmbeddedMessage;
 
     pub const PossibleParents = struct {
         pub const code = 102;
@@ -774,5 +770,202 @@ pub const init = struct {
     pub const Header = extern struct {
         len: u32,
         code: u8,
+    };
+
+    pub const PeerInit = struct {
+        pub const code = 1;
+
+        username: []const u8,
+        type: ConnectionType,
+        token: u32 = 0,
+    };
+
+    pub const PeerInitResponse = struct {
+        pub const code = 1;
+
+        username: []const u8,
+    };
+};
+
+pub const peer = struct {
+    pub const Header = client.Header;
+
+    const TransferRejection = struct {
+        // zig fmt WHY??
+        const Reason = enum { Banned, Cancelled, Complete, @"File not shared.", @"File read error.", @"Pending shutdown.", Queued, @"Too many files", @"Too many megabytes" };
+
+        string: []const u8,
+
+        pub fn init(reason: Reason) TransferRejection {
+            return TransferRejection{ .string = @tagName(reason) };
+        }
+    };
+
+    const Directory = struct { directory: []const u8, files: []const File };
+    const File = struct {
+        // TODO: Detect attributes from file.
+        const Attribute = struct {
+            code: enum(u32) { bitrate = 0, duration = 1, vbr = 2, encoder = 3, sample_rate = 4, bit_depth = 5 },
+            value: u32,
+        };
+
+        code: u8 = 1,
+        name: []const u8,
+        size: u64,
+        /// Untrustworthy.
+        extension: []const u8,
+        attributes: []const Attribute,
+    };
+
+    pub const GetShareFileList = struct {
+        pub const code = 4;
+    };
+
+    // TODO: zlib
+    // pub const SharedFileListResponse = struct {
+    //     pub const code = 5;
+
+    //     public: []const Directory,
+    //     unknown: u32 = 0,
+    //     private: []const Directory,
+    // };
+
+    // pub const FileSearchResponse = struct {
+    //     pub const code = 9;
+
+    //     username: []const u8,
+    //     token: u32,
+    //     public:  []const File,
+    //     slot_free: Bool,
+    //     avgspeed: u32,
+    //     queue: u32,
+    //     unknown: u32 = 0,
+    //     private: []const File
+    // };
+
+    pub const UserInfoRequest = struct {
+        pub const code = 15;
+    };
+
+    pub const UserInfoResponse = struct {
+        pub const code = 16;
+
+        description: []const u8,
+        picture: union(Bool) { false: void, true: []const u8 },
+        upload: u32,
+        queue: u32,
+        slot_free: Bool,
+        upload_permissions: ?enum(u32) { no_one = 0, everyone = 1, list = 2, permitted = 3 },
+    };
+
+    pub const FolderContentsRequest = struct {
+        pub const code = 36;
+
+        token: u32,
+        folder: []const u8,
+    };
+
+    // TODO: zlib
+    // pub const FolderContentsResponse = struct {
+    //     pub const code = 37;
+
+    //     token: u32,
+    //     name: []const u8,
+    //     folders: []const Directory,
+    // };
+
+    pub const TransferRequest = struct {
+        pub const code = 40;
+
+        direction: enum(u32) { download = 0, upload = 1 },
+        token: u32,
+        filename: []const u8,
+        size: ?u64,
+    };
+
+    pub const TransferResponse = struct {
+        pub const code = 41;
+
+        token: u32,
+        allowed: union(Bool) { false: TransferRejection, true: ?u64 },
+    };
+
+    pub const QueueUpload = struct {
+        pub const code = 43;
+
+        filename: []const u8,
+    };
+
+    pub const PlaceInQueueResponse = struct {
+        pub const code = 44;
+
+        filename: []const u8,
+        place: u32,
+    };
+
+    pub const UploadFailed = struct {
+        pub const code = 46;
+
+        filename: []const u8,
+    };
+
+    pub const UploadDenied = struct {
+        pub const code = 50;
+
+        filename: []const u8,
+        reason: TransferRejection,
+    };
+
+    pub const PlaceInQueueRequest = struct {
+        pub const code = 51;
+
+        filename: []const u8,
+    };
+
+    pub const UploadNotification = struct {
+        pub const code = 52;
+    };
+};
+
+pub const distributed = struct {
+    pub const Header = init.Header;
+
+    const base = struct {
+        pub const Header = void;
+
+        pub const DistribPing = struct {
+            pub const code = 0;
+        };
+
+        pub const DistribSearch = struct {
+            pub const code = 3;
+
+            identifier: u32 = '1',
+            username: []const u8,
+            token: u32,
+            query: []const u8,
+        };
+
+        pub const DistribBranchLevel = struct {
+            pub const code = 4;
+
+            level: i32,
+        };
+
+        pub const DistribBranchRoot = struct {
+            pub const code = 5;
+
+            root: []const u8,
+        };
+    };
+
+    pub const DistribPing = base.DistribPing;
+    pub const DistribSearch = base.DistribSearch;
+    pub const DistribBranchLevel = base.DistribBranchLevel;
+    pub const DistribBranchRoot = base.DistribBranchRoot;
+    pub const DistribEmbeddedMessage = struct {
+        pub const code = 93;
+
+        message: Response(base),
     };
 };
