@@ -70,15 +70,20 @@ pub fn read(gpa: Allocator, reader: *Reader, ResponseT: type) !ResponseT {
     var progress = ReadProgress{ .current = @sizeOf(@TypeOf(header.len)), .end = header.len };
     const response = readUnion(ResponseT, gpa, reader, tag, &progress);
     if (progress.current != progress.end) {
+        freeResponse(gpa, response);
         return error.invalidLength;
     }
+
     return response;
 }
 
 pub fn freeResponse(gpa: Allocator, response: anytype) void {
     const T = @TypeOf(response);
     switch (@typeInfo(T)) {
-        .pointer => gpa.free(response),
+        .pointer => {
+            for (response) |e| freeResponse(gpa, e); // The child could have heap allocated memory as well.
+            gpa.free(response);
+        },
         .optional => if (response) |v| freeResponse(gpa, v),
         .@"struct" => inline for (@typeInfo(T).@"struct".fields) |field|
             freeResponse(gpa, @field(response, field.name)),
@@ -117,6 +122,7 @@ fn readT(gpa: Allocator, reader: *Reader, T: type, progress: *ReadProgress) !T {
 
             const Child = meta.Child(T);
             const slice = try gpa.alloc(Child, size);
+            errdefer gpa.free(slice);
             for (0..size) |i| slice[i] = try readT(gpa, reader, Child, progress);
             t = slice;
         },
@@ -155,25 +161,33 @@ pub fn main(init: std.process.Init) !u8 {
     try write(writer, try client.Login.init(init.gpa, "username", "password"));
     try writer.flush();
 
-    inline for (.{ messages.client, messages.server, messages.peer, messages.distributed }) |t| {
-        const response = try read(init.gpa, reader, Response(t));
+    while (true) {
+        const response = try read(init.gpa, reader, Response(messages.server));
+        errdefer freeResponse(init.gpa, response);
         switch (response) {
-            // .login => switch (response.login) {
-            //     .true => {
-            //         print("Login sucessful!\n", .{});
-            //     },
-            //     .false => |r| {
-            //         print("Login rejected: '{s}'!\n", .{r.reason});
-            //         exit = true;
-            //     },
-            // },
-            else => {
+            .login => |login| {
+                switch (login) {
+                    .true => {
+                        print("Login sucessful!\n", .{});
+                    },
+                    .false => |r| {
+                        print("Login rejected: '{s}'!\n", .{r.reason});
+                    },
+                }
+
+                freeResponse(init.gpa, login);
+            },
+            .excludedSearchPhrases => |excluded| {
+                for (excluded.phrases) |p| print("{s}\n", .{ p });
+                freeResponse(init.gpa, excluded);
+                return 0;
+            },
+            else => |other| {
                 const tag = meta.activeTag(response);
                 print("WARNING: No handler for response {}: '{s}'.\n{any}\n\n", .{ @intFromEnum(tag), @tagName(tag), response });
+                freeResponse(init.gpa, other);
             },
         }
-
-        freeResponse(init.gpa, response);
     }
 
     return 0;
