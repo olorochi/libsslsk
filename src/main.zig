@@ -64,13 +64,11 @@ fn writeT(writer: *Writer, t: anytype) !void {
     const T = @TypeOf(t);
     const info = @typeInfo(T);
     switch (info) {
-        .@"union" => {
-            switch (t) {
-                inline else => |payload, tag| {
-                    writeT(tag);
-                    writeT(writer, payload);
-                },
-            }
+        .@"union" => switch (t) {
+            inline else => |payload, tag| {
+                writeT(tag);
+                writeT(writer, payload);
+            },
         },
         .@"struct" => inline for (info.@"struct".fields) |field| {
             try writeT(writer, @field(t, field.name));
@@ -144,7 +142,11 @@ fn readT(gpa: Allocator, reader: *Reader, T: type, progress: *ReadProgress) !T {
             progress.current += @sizeOf(T);
         },
         // Optionals can only ever be at the end of a message.
-        .optional => t = if (progress.current == progress.end) null else try readT(gpa, reader, @TypeOf(t.?), progress),
+        .optional => {
+            if (progress.current == progress.end) t = null else {
+                t = try readT(gpa, reader, @TypeOf(t.?), progress);
+            }
+        },
         .void => {},
         else => {
             t = try reader.takeInt(T, .little);
@@ -186,6 +188,7 @@ pub fn main(init: std.process.Init) !u8 {
     while (true) {
         const response = try read(init.gpa, reader, Response(messages.server));
         errdefer freeResponse(init.gpa, response);
+
         switch (response) {
             .login => |login| {
                 switch (login) {

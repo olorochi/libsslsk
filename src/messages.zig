@@ -221,8 +221,6 @@ pub const client = struct {
 
     pub const CheckPrivileges = struct {
         pub const code = 92;
-
-        pub const Response = struct { seconds: u32 };
     };
 
     pub const AcceptChildren = struct {
@@ -291,8 +289,6 @@ pub const client = struct {
         pub const code = 122;
 
         username: []const u8,
-
-        pub const Response = struct { username: []const u8, privileged: Bool };
     };
 
     pub const GivePrivileges = struct {
@@ -597,6 +593,12 @@ pub const server = struct {
         pub const code = 84;
 
         ratio: u32,
+    };
+
+    pub const CheckPrivileges = struct {
+        pub const code = 92;
+
+        seconds: u32
     };
 
     pub const EmbeddedMessage = distributed.DistribEmbeddedMessage;
