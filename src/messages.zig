@@ -791,8 +791,17 @@ pub const peer = struct {
     pub const Header = client.Header;
 
     const TransferRejection = struct {
-        // zig fmt WHY??
-        const Reason = enum { Banned, Cancelled, Complete, @"File not shared.", @"File read error.", @"Pending shutdown.", Queued, @"Too many files", @"Too many megabytes" };
+        const Reason = enum {
+            Banned,
+            Cancelled,
+            Complete,
+            @"File not shared.",
+            @"File read error.",
+            @"Pending shutdown.",
+            Queued,
+            @"Too many files",
+            @"Too many megabytes",
+        };
 
         string: []const u8,
 
@@ -805,7 +814,14 @@ pub const peer = struct {
     const File = struct {
         // TODO: Detect attributes from file.
         const Attribute = struct {
-            code: enum(u32) { bitrate = 0, duration = 1, vbr = 2, encoder = 3, sample_rate = 4, bit_depth = 5 },
+            code: enum(u32) {
+                bitrate = 0,
+                duration = 1,
+                vbr = 2,
+                encoder = 3,
+                sample_rate = 4,
+                bit_depth = 5,
+            },
             value: u32,
         };
 
