@@ -18,51 +18,33 @@ const Hash = [Md5.digest_length * 2]u8;
 
 const Recommendation = struct { recommendation: []const u8, recommendations: i32 };
 
-/// Returns the header type associated with request or response union T.
-pub fn Header(T: type) type {
-    const types = .{ client, server, init, peer, distributed };
-
-    for (types) |t| {
-        if (T == Response(t)) return t.Header;
-        for (@typeInfo(t).@"struct".decls) |decl| {
-            const D = @field(t, decl.name);
-            if (T == D) return t.Header;
-        }
-    }
-
-    @compileError("Header not found for " ++ @typeName(T) ++ ".");
-}
-
-pub fn Response(Messages: type) type {
-    const decls = @typeInfo(Messages).@"struct".decls;
+pub fn Response(messages: type) type {
+    const decls = @typeInfo(messages).@"struct".decls;
     const count = decls.len - 1;
 
     const attrs: [count]Type.UnionField.Attributes = @splat(.{ .@"align" = null });
     var types: [count]type = undefined;
-    var values: [count]u32 = undefined;
+    var values: [count]messages.Tag = undefined;
     var names: [count][]const u8 = undefined;
 
     var i = 0;
     for (decls) |decl| {
-        if (mem.eql(u8, decl.name, "Header")) continue;
-        types[i] = @field(Messages, decl.name);
+        if (mem.eql(u8, decl.name, "Tag")) continue;
+        types[i] = @field(messages, decl.name);
         values[i] = types[i].code;
         names[i] = .{ascii.toLower(decl.name[0])} ++ decl.name[1..];
         i += 1;
     }
 
-    const Tag = @Enum(u32, .exhaustive, &names, &values);
+    const Tag = @Enum(messages.Tag, .exhaustive, &names, &values);
     return @Union(.auto, Tag, &names, &types, &attrs);
 }
 
 pub const client = struct {
-    pub const Header = extern struct {
-        len: u32,
-        code: u32,
-    };
+    pub const Tag = u32;
 
     pub const Login = struct {
-        pub const code = 1;
+        pub const code: u32 = 1;
 
         username: []const u8,
         password: []const u8,
@@ -425,7 +407,7 @@ pub const client = struct {
 };
 
 pub const server = struct {
-    pub const Header = client.Header;
+    pub const Tag = u32;
 
     const UserStats = struct {
         username: []const u8,
@@ -767,10 +749,7 @@ pub const server = struct {
 };
 
 pub const init = struct {
-    pub const Header = extern struct {
-        len: u32,
-        code: u8,
-    };
+    pub const Tag = u8;
 
     pub const PeerInit = struct {
         pub const code = 1;
@@ -788,7 +767,7 @@ pub const init = struct {
 };
 
 pub const peer = struct {
-    pub const Header = client.Header;
+    pub const Tag = u32;
 
     const TransferRejection = struct {
         const Reason = enum {
@@ -944,10 +923,10 @@ pub const peer = struct {
 };
 
 pub const distributed = struct {
-    pub const Header = init.Header;
+    pub const Tag = u8;
 
     const base = struct {
-        pub const Header = void;
+        pub const Tag = u8;
 
         pub const DistribPing = struct {
             pub const code = 0;
