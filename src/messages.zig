@@ -598,7 +598,7 @@ pub const server = struct {
     pub const CheckPrivileges = struct {
         pub const code: Tag = 92;
 
-        seconds: u32
+        seconds: u32,
     };
 
     pub const EmbeddedMessage = distributed.DistribEmbeddedMessage;
@@ -818,27 +818,30 @@ pub const peer = struct {
         pub const code: Tag = 4;
     };
 
-    // TODO: zlib
-    // pub const SharedFileListResponse = struct {
-    //     pub const code: Tag = 5;
+    pub const SharedFileListResponse = struct {
+        pub const code: Tag = 5;
 
-    //     public: []const Directory,
-    //     unknown: u32 = 0,
-    //     private: []const Directory,
-    // };
+        zlib: struct {
+            public: []const Directory,
+            unknown: u32 = 0,
+            private: []const Directory,
+        },
+    };
 
-    // pub const FileSearchResponse = struct {
-    //     pub const code: Tag = 9;
+    pub const FileSearchResponse = struct {
+        pub const code: Tag = 9;
 
-    //     username: []const u8,
-    //     token: u32,
-    //     public:  []const File,
-    //     slot_free: Bool,
-    //     avgspeed: u32,
-    //     queue: u32,
-    //     unknown: u32 = 0,
-    //     private: []const File
-    // };
+        zlib: struct {
+            username: []const u8,
+            token: u32,
+            public: []const File,
+            slot_free: Bool,
+            avgspeed: u32,
+            queue: u32,
+            unknown: u32 = 0,
+            private: []const File,
+        },
+    };
 
     pub const UserInfoRequest = struct {
         pub const code: Tag = 15;
@@ -862,14 +865,15 @@ pub const peer = struct {
         folder: []const u8,
     };
 
-    // TODO: zlib
-    // pub const FolderContentsResponse = struct {
-    //     pub const code: Tag = 37;
+    pub const FolderContentsResponse = struct {
+        pub const code: Tag = 37;
 
-    //     token: u32,
-    //     name: []const u8,
-    //     folders: []const Directory,
-    // };
+        zlib: struct {
+            token: u32,
+            name: []const u8,
+            folders: []const Directory,
+        },
+    };
 
     pub const TransferRequest = struct {
         pub const code: Tag = 40;

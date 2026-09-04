@@ -1,5 +1,6 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const flate = std.compress.flate;
 const HostName = std.Io.net.HostName;
 const meta = std.meta;
 const mem = std.mem;
@@ -14,6 +15,9 @@ pub const Response = messages.Response;
 pub const std_options = std.Options{
     .fmt_max_depth = 5,
 };
+
+// NOTE: I don't know where this is allocated
+threadlocal var zlibBuffer: [flate.max_window_len]u8 = undefined;
 
 fn allocate(T: type) T {
     return undefined;
@@ -71,7 +75,12 @@ fn writeT(writer: *Writer, t: anytype) !void {
             },
         },
         .@"struct" => inline for (info.@"struct".fields) |field| {
-            try writeT(writer, @field(t, field.name));
+            const value = @field(t, field.name);
+            if (mem.eql(u8, field.name, "zlib")) {
+                try writeZlib(writer, value);
+            } else {
+                try writeT(writer, @field(t, field.name));
+            }
         },
         .pointer => try writeSlice(writer, t),
         .array => try writeSlice(writer, &t),
@@ -79,6 +88,11 @@ fn writeT(writer: *Writer, t: anytype) !void {
         .void => {},
         else => try writer.writeInt(T, t, .little),
     }
+}
+
+fn writeZlib(writer: *Writer, t: anytype) !void {
+    var zlib = try flate.Compress.init(writer, &zlibBuffer, .zlib, .default);
+    try writeT(&zlib.writer, t);
 }
 
 fn writeSlice(writer: *Writer, s: anytype) !void {
@@ -117,8 +131,14 @@ fn readT(gpa: Allocator, reader: *Reader, T: type, progress: *ReadProgress) !T {
             }
         },
         .@"struct" => {
-            inline for (@typeInfo(T).@"struct".fields) |field|
-                @field(t, field.name) = try readT(gpa, reader, field.type, progress);
+            inline for (@typeInfo(T).@"struct".fields) |field| {
+                const fp = &@field(t, field.name);
+                if (mem.eql(u8, field.name, "zlib")) {
+                    fp.* = try readZlib(gpa, reader, field.type, progress);
+                } else {
+                    fp.* = try readT(gpa, reader, field.type, progress);
+                }
+            }
         },
         .array => {
             const size = try reader.takeInt(u32, .little);
@@ -155,6 +175,11 @@ fn readT(gpa: Allocator, reader: *Reader, T: type, progress: *ReadProgress) !T {
     }
 
     return t;
+}
+
+fn readZlib(gpa: Allocator, reader: *Reader, T: type, progress: *ReadProgress) !T {
+    var zlib = flate.Decompress.init(reader, .zlib, &zlibBuffer);
+    return readT(gpa, &zlib.reader, T, progress);
 }
 
 pub fn freeResponse(gpa: Allocator, response: anytype) void {
